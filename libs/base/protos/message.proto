@@ -695,6 +695,8 @@ message OptionMessage {
   BoolOption disable_camera = 17;
   BoolOption terminal_persistent = 18;
   BoolOption show_my_cursor = 19;
+  // Custom clients only: allow the controlled side to send text clipboard in view-only mode.
+  BoolOption view_only_text_clipboard = 20;
 }
 
 message TestDelay {

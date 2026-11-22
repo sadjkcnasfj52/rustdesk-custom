@@ -397,6 +397,8 @@ pub struct Connection {
     // by peer
     disable_clipboard: bool,
     // by peer
+    view_only_text_clipboard: bool,
+    // by peer
     disable_audio: bool,
     // by peer
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -609,6 +611,7 @@ impl Connection {
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             enable_file_transfer: false,
             disable_clipboard: false,
+            view_only_text_clipboard: false,
             disable_keyboard: false,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             show_my_cursor: false,
@@ -1086,6 +1089,20 @@ impl Connection {
                     let latency = instant.elapsed().as_millis() as i64;
                     #[allow(unused_mut)]
                     let mut msg = value;
+
+                    if conn.view_only_text_clipboard_enabled()
+                        && matches!(
+                            msg.union.as_ref(),
+                            Some(message::Union::Clipboard(_))
+                                | Some(message::Union::MultiClipboards(_))
+                        )
+                    {
+                        let Some(text_message) = Connection::view_only_text_clipboard_message(&msg)
+                        else {
+                            continue;
+                        };
+                        msg = Arc::new(text_message);
+                    }
 
                     if latency > 1000 {
                         match &msg.union {
@@ -2316,11 +2333,45 @@ impl Connection {
         self.clipboard && !self.disable_clipboard
     }
 
+    fn view_only_text_clipboard_enabled(&self) -> bool {
+        self.view_only_text_clipboard && self.disable_keyboard && self.disable_clipboard
+    }
+
+    fn view_only_text_clipboard_message(msg: &Message) -> Option<Message> {
+        match msg.union.as_ref()? {
+            message::Union::Clipboard(clipboard)
+                if clipboard.format.enum_value() == Ok(ClipboardFormat::Text) =>
+            {
+                let mut text_message = Message::new();
+                text_message.set_clipboard(clipboard.clone());
+                Some(text_message)
+            }
+            message::Union::MultiClipboards(multi_clipboards) => {
+                let clipboards = multi_clipboards
+                    .clipboards
+                    .iter()
+                    .filter(|clipboard| clipboard.format.enum_value() == Ok(ClipboardFormat::Text))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if clipboards.is_empty() {
+                    return None;
+                }
+                let mut text_message = Message::new();
+                text_message.set_multi_clipboards(MultiClipboards {
+                    clipboards,
+                    ..Default::default()
+                });
+                Some(text_message)
+            }
+            _ => None,
+        }
+    }
+
     #[inline]
     fn can_sub_clipboard_service(&self) -> bool {
-        self.clipboard_enabled()
-            && self.peer_keyboard_enabled()
-            && crate::get_builtin_option(keys::OPTION_ONE_WAY_CLIPBOARD_REDIRECTION) != "Y"
+        crate::get_builtin_option(keys::OPTION_ONE_WAY_CLIPBOARD_REDIRECTION) != "Y"
+            && ((self.clipboard_enabled() && self.peer_keyboard_enabled())
+                || (self.clipboard && self.view_only_text_clipboard_enabled()))
     }
 
     fn audio_enabled(&self) -> bool {
@@ -3347,7 +3398,10 @@ impl Connection {
                     self.update_auto_disconnect_timer();
                 }
                 Some(message::Union::Clipboard(cb)) => {
-                    if self.should_handle_text_clipboard_message() && self.clipboard_enabled() {
+                    if self.should_handle_text_clipboard_message()
+                        && self.clipboard_enabled()
+                        && !self.view_only_text_clipboard_enabled()
+                    {
                         #[cfg(not(any(target_os = "android", target_os = "ios")))]
                         update_clipboard(vec![cb], ClipboardSide::Host);
                         // ios as the controlled side is actually not supported for now.
@@ -3375,7 +3429,10 @@ impl Connection {
                     }
                 }
                 Some(message::Union::MultiClipboards(_mcb)) => {
-                    if self.should_handle_text_clipboard_message() && self.clipboard_enabled() {
+                    if self.should_handle_text_clipboard_message()
+                        && self.clipboard_enabled()
+                        && !self.view_only_text_clipboard_enabled()
+                    {
                         #[cfg(not(any(target_os = "android", target_os = "ios")))]
                         update_clipboard(_mcb.clipboards, ClipboardSide::Host);
                         #[cfg(target_os = "android")]
@@ -4982,6 +5039,18 @@ impl Connection {
                 }
             }
         }
+        if let Ok(q) = o.view_only_text_clipboard.enum_value() {
+            if q != BoolOption::NotSet {
+                self.view_only_text_clipboard = q == BoolOption::Yes;
+                if let Some(s) = self.server.upgrade() {
+                    s.write().unwrap().subscribe(
+                        super::clipboard_service::NAME,
+                        self.inner.clone(),
+                        self.can_sub_clipboard_service(),
+                    );
+                }
+            }
+        }
         if let Ok(q) = o.disable_keyboard.enum_value() {
             if q != BoolOption::NotSet {
                 self.disable_keyboard = q == BoolOption::Yes;
@@ -5915,6 +5984,7 @@ impl Connection {
             && Self::is_bool_option_not_set(option.disable_camera)
             && Self::is_bool_option_not_set(option.terminal_persistent)
             && Self::is_bool_option_not_set(option.show_my_cursor)
+            && Self::is_bool_option_not_set(option.view_only_text_clipboard)
     }
 
     fn is_connection_housekeeping_message(msg: &Message) -> bool {
@@ -6056,7 +6126,8 @@ impl Connection {
             && Self::is_bool_option_not_set(option.follow_remote_window)
             && Self::is_bool_option_not_set(option.disable_camera)
             && Self::is_bool_option_not_set(option.terminal_persistent)
-            && Self::is_bool_option_not_set(option.show_my_cursor))
+            && Self::is_bool_option_not_set(option.show_my_cursor)
+            && Self::is_bool_option_not_set(option.view_only_text_clipboard))
     }
 
     fn option_has_non_terminal_login_field(option: &OptionMessage) -> bool {
@@ -6076,6 +6147,7 @@ impl Connection {
             || !Self::is_bool_option_not_set(option.follow_remote_window)
             || !Self::is_bool_option_not_set(option.disable_camera)
             || !Self::is_bool_option_not_set(option.show_my_cursor)
+            || !Self::is_bool_option_not_set(option.view_only_text_clipboard)
     }
 
     fn option_has_any_field(option: &OptionMessage) -> bool {
@@ -7603,6 +7675,49 @@ mod test {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn view_only_text_clipboard_keeps_only_plain_text() {
+        let mut message = Message::new();
+        message.set_multi_clipboards(MultiClipboards {
+            clipboards: vec![
+                Clipboard {
+                    format: ClipboardFormat::Text.into(),
+                    content: b"123456".to_vec(),
+                    ..Default::default()
+                },
+                Clipboard {
+                    format: ClipboardFormat::Html.into(),
+                    content: b"<b>123456</b>".to_vec(),
+                    ..Default::default()
+                },
+                Clipboard {
+                    format: ClipboardFormat::ImagePng.into(),
+                    content: vec![0x89, b'P', b'N', b'G'],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+
+        let filtered = Connection::view_only_text_clipboard_message(&message).unwrap();
+        let clipboards = &filtered.multi_clipboards().clipboards;
+        assert_eq!(clipboards.len(), 1);
+        assert_eq!(clipboards[0].format.enum_value(), Ok(ClipboardFormat::Text));
+        assert_eq!(clipboards[0].content.as_ref(), b"123456");
+    }
+
+    #[test]
+    fn view_only_text_clipboard_drops_non_text_data() {
+        let mut message = Message::new();
+        message.set_clipboard(Clipboard {
+            format: ClipboardFormat::ImagePng.into(),
+            content: vec![0x89, b'P', b'N', b'G'],
+            ..Default::default()
+        });
+
+        assert!(Connection::view_only_text_clipboard_message(&message).is_none());
     }
 
     #[test]

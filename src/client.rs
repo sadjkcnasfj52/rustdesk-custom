@@ -3312,12 +3312,14 @@ impl LoginConfigHandler {
             if config.view_only.v {
                 option.disable_keyboard = f(true);
                 option.disable_clipboard = f(true);
+                option.view_only_text_clipboard = f(!config.disable_clipboard.v);
                 option.show_remote_cursor = f(true);
                 option.enable_file_transfer = f(false);
                 option.lock_after_session_end = f(false);
             } else {
                 option.disable_keyboard = f(false);
                 option.disable_clipboard = f(self.get_toggle_option("disable-clipboard"));
+                option.view_only_text_clipboard = f(false);
                 option.show_remote_cursor = f(self.get_toggle_option("show-remote-cursor"));
                 option.enable_file_transfer = f(self.config.enable_file_copy_paste.v);
                 option.lock_after_session_end = f(self.config.lock_after_session_end.v);
@@ -3422,6 +3424,9 @@ impl LoginConfigHandler {
         let view_only = self.get_toggle_option("view-only");
         if view_only {
             msg.disable_keyboard = BoolOption::Yes.into();
+            if !self.get_toggle_option("disable-clipboard") {
+                msg.view_only_text_clipboard = BoolOption::Yes.into();
+            }
         }
         if view_only || self.get_toggle_option("show-remote-cursor") {
             msg.show_remote_cursor = BoolOption::Yes.into();
