@@ -2318,8 +2318,8 @@ impl Connection {
 
     #[inline]
     fn can_sub_clipboard_service(&self) -> bool {
-        self.clipboard_enabled()
-            && self.peer_keyboard_enabled()
+        (self.clipboard_enabled() && self.peer_keyboard_enabled()
+            || self.clipboard && self.disable_clipboard && self.disable_keyboard)
             && crate::get_builtin_option(keys::OPTION_ONE_WAY_CLIPBOARD_REDIRECTION) != "Y"
     }
 
